@@ -1,5 +1,5 @@
-use crate::config::*;
-use crate::trap::TrapContext;
+use crate::{config::*, trap::TrapContext};
+
 
 #[repr(align(4096))]
 #[derive(Copy, Clone)]

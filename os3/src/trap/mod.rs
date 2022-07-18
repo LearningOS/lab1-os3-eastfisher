@@ -14,7 +14,7 @@
 
 mod context;
 
-use crate::syscall;
+use crate::syscall::syscall;
 use crate::task::{exit_current_and_run_next, suspend_current_and_run_next};
 use crate::timer::set_next_trigger;
 use riscv::register::{

@@ -17,9 +17,11 @@ mod task;
 use crate::config::{MAX_APP_NUM, MAX_SYSCALL_NUM};
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use crate::syscall::{self, TaskInfo, TimeVal};
+use crate::timer::get_time_us;
 use lazy_static::*;
 pub use switch::__switch;
-pub use task::{TaskControlBlock, TaskStatus};
+pub use task::*;
 
 pub use context::TaskContext;
 
@@ -54,6 +56,9 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            is_sched: false,
+            first_sched_time: TimeVal{sec:0, usec:0},
+            syscall_counts: [0; MAX_SYSCALL_NUM],
         }; MAX_APP_NUM];
         for (i, t) in tasks.iter_mut().enumerate().take(num_app) {
             t.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -80,6 +85,13 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let task0 = &mut inner.tasks[0];
         task0.task_status = TaskStatus::Running;
+        if !task0.is_sched {
+            task0.is_sched = true;
+            let ptr: *mut TimeVal = &mut task0.first_sched_time;
+            task_get_time(ptr, 0);
+            // let us = get_time_us();
+            // syscall::syscall(410, [ptr as usize, 0, 0]);
+        }
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -122,6 +134,12 @@ impl TaskManager {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
+            if !inner.tasks[next].is_sched {
+                inner.tasks[next].is_sched = true;
+                let ptr: *mut TimeVal = &mut inner.tasks[next].first_sched_time;
+                task_get_time(ptr, 0);
+                // syscall::syscall(410, [ptr as usize, 0, 0]);
+            }
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
@@ -137,6 +155,23 @@ impl TaskManager {
     }
 
     // LAB1: Try to implement your function to update or get task info!
+    pub fn incr_syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_counts[syscall_id] += 1;
+    }
+
+    pub fn list_syscall_counts(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_counts
+    }
+
+    pub fn get_first_sched_time(&self) -> TimeVal {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].first_sched_time
+    }
 }
 
 /// Run the first task in task list.
@@ -174,3 +209,26 @@ pub fn exit_current_and_run_next() {
 
 // LAB1: Public functions implemented here provide interfaces.
 // You may use TASK_MANAGER member functions to handle requests.
+pub fn incr_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.incr_syscall_count(syscall_id);
+}
+
+pub fn list_syscall_counts() -> [u32; MAX_SYSCALL_NUM] {
+    TASK_MANAGER.list_syscall_counts()
+}
+
+pub fn get_first_sched_time() -> TimeVal {
+    TASK_MANAGER.get_first_sched_time()
+}
+
+// 绕过syscall层, 直接调用timer获取时间, 解决循环依赖问题
+fn task_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    let us = get_time_us();
+    unsafe {
+        *ts = TimeVal {
+            sec: us / 1_000_000,
+            usec: us % 1_000_000,
+        };
+    }
+    0
+}
